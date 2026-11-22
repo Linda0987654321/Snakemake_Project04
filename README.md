@@ -1,81 +1,133 @@
-# Reproducible Multi-Pair Protein-Protein Docking Pipeline (Snakemake + LightDock)
+# Multi-pair protein-protein docking with Snakemake
 
-An end-to-end, Snakemake-based workflow designed for reproducible execution. Built with **Snakemake** and **LightDock** to download, repair, dock, rank, benchmark, and visualize multiple protein-protein complexes in parallel.
+This workflow downloads, preprocesses, docks, ranks and visualizes one or more
+protein pairs. The same wildcard rules are reused for every entry in the config.
+Each docking job has two partners; adding pairs creates additional independent jobs,
+not a single docking calculation with three or more partners.
 
-## Repository Structure
+## Folder structure
 
 ```text
-protein_docking/
-├── Snakefile                       # Multi-pair workflow rules & full swarm DAG dependencies
-├── config/
-│   └── config.yaml                 # Protein complex URLs & docking parameters
-├── envs/
-│   └── lightdock_env.yaml          # Conda/pip environment (LightDock, PDBFixer, PyMOL, Biopython)
-├── scripts/
-│   ├── fix_and_clean_pdb.py        # PDBFixer preprocessing (waters/heterogens, missing residues, H at pH 7.0)
-│   ├── plot_top_pose.py            # Headless PyMOL ray-traced 3D visualization
-│   └── summarize_metrics.py        # Cross-pair aggregation of dfire2 scores & benchmarks
-├── benchmarks/                     # Snakemake wall-clock & memory benchmarks per complex
-├── results/
-│   ├── summary_metrics.csv         # Aggregated cross-pair scores & runtime metrics
-│   ├── EnzymeI_HPr/                # Rankings, top pose PDB, and rendered PNG
-│   └── Trypsin_BPTI/               # Rankings, top pose PDB, and rendered PNG
-├── dag_multipair.png               # Full multi-pair execution DAG
-├── rulegraph.png                   # High-level rule dependency graph
-├── .gitignore                      # Excludes heavy caches & intermediate trajectory files
-└── README.md
+Snakemake_Project04/
+  Snakefile
+  config/config.yaml           # Pair IDs, direct PDB URLs and docking settings
+  environment.yaml             # Environment for running Snakemake
+  envs/lightdock_env.yaml       # Tools used by the workflow rules
+  scripts/
+    fix_and_clean_pdb.py        # PDBFixer preparation (original script)
+    export_top_pose.py          # Exact winning pose and ANM reconstruction
+    plot_top_pose.py            # PyMOL rendering of both complete partners
+    summarize_metrics.py       # One combined results table (original script)
+  data/                        # Downloaded input PDBs
+  results/<pair>/              # Prepared structures, docking files, top pose, figure
+  results/summary_metrics.csv  # One row per configured pair
+  logs/<pair>/                 # Command output and errors
+  benchmarks/<pair>/           # Runtime and memory measurements
+  dag_multipair.png            # Two example pair branches and shared summary
+  rulegraph.png                # High-level rule graph (no individual pair labels)
 ```
 
-## Workflow Architecture (`dag_multipair.png`)
+## Software setup
 
-![Multi-Pair Workflow DAG](dag_multipair.png)
+For this Windows setup, Ubuntu/WSL, Conda and Snakemake must already be available.
+The Snakemake environment runs the workflow manager. The workflow's separate tool
+environment contains Python 3.10, LightDock, PDBFixer, PyMOL and scientific dependencies,
+as specified in `envs/lightdock_env.yaml`. The environment files remain unchanged
+from the colleague's version.
 
-1. **`download_pdbs`**: Fetches unbound receptor and ligand structures directly from RCSB PDB (`1EZA`/`1HDN` and `1TPO`/`4PTI`).
-2. **`clean_structures`**: Uses **PDBFixer** (`OpenMM`) to strip crystallographic waters and heterogens, rebuild missing residues and missing heavy atoms, and add hydrogens at physiological pH (`7.0`).
-3. **`lightdock_setup`**: Initializes simulation swarms (`10` swarms, `20` glowworms/swarm) with Anisotropic Network Model (`-anm`) backbone flexibility (`--noxt --noh --now -anm`).
-4. **`lightdock_simulate`**: Runs Glowworm Swarm Optimization (GSO) for `20` steps across `4` CPU cores using the `dfire2` scoring function, explicitly declaring all swarm outputs (`swarm_0..9/gso_20.out`) in the DAG.
-5. **`lightdock_rank`**: Ranks all glowworms across all `10` swarms globally (`lgd_rank.py`) and reconstructs the #1 ranked 3D complex (`{pair}_top_1.pdb`).
-6. **`visualize_top_pose`**: Renders a high-resolution ($1600 \times 1200$, 300 DPI) ray-traced PyMOL figure (`{pair}_top_pose.png`) showing the receptor (marine cartoon + translucent surface) and bound ligand (orange cartoon).
-7. **`summarize_results`**: Aggregates top `dfire2` scores, winning swarm/glowworm IDs, and wall-clock/memory benchmarks into `results/summary_metrics.csv`.
+**Created automatically on first use; reused afterwards:** with `--sdm conda`,
+Snakemake creates missing tool environments and stores them under `.snakemake/conda/`.
+Subsequent runs reuse them. A changed environment definition or a deleted environment
+can require a new environment. It is not installed separately for every pair.
 
-## Configuration (`config/config.yaml`)
+## Configure the proteins
 
-```yaml
-pairs:
-  EnzymeI_HPr:
-    receptor_url: "https://files.rcsb.org/download/1EZA.pdb"
-    ligand_url: "https://files.rcsb.org/download/1HDN.pdb"
-  Trypsin_BPTI:
-    receptor_url: "https://files.rcsb.org/download/1TPO.pdb"
-    ligand_url: "https://files.rcsb.org/download/4PTI.pdb"
+Edit `config/config.yaml`. The generic IDs `pair_1` and `pair_2` are labels, not
+fixed protein identities. The supplied real PDB URLs keep the example runnable.
+Replace both URLs with direct PDB-file URLs for your chosen pair. Local filesystem
+paths are not accepted by the current download rule. Check that each downloaded
+PDB contains the intended protein chains; this workflow does not select chains.
 
-docking_params:
-  swarms: 10
-  glowworms: 20
-  steps: 20
-```
+Add `pair_3`, `pair_4`, etc. using the same receptor_url / ligand_url structure.
+Use unique IDs with letters, digits and underscores, without spaces. The commented
+config explains each setting. Parameters are shared across all configured pairs.
 
-## How to Run
+Use a NEW pair ID when changing the input structures after a run. Otherwise old
+`data/<pair>_rec.pdb` and `data/<pair>_lig.pdb` files may be reused. Old result folders
+can remain locally, but only currently configured IDs enter the combined summary.
 
-Ensure Conda/Mamba and Snakemake are installed, then execute:
+## Run in Ubuntu (including a VS Code WSL terminal)
 
 ```bash
-# Dry-run to verify DAG and target files
-snakemake -n --use-conda
-
-# Execute full workflow across 4 cores
-snakemake --cores 4 --use-conda
+cd ~/exercise4/Snakemake_Project04
+conda activate snakemake
+snakemake --cores 4 --sdm conda --dry-run
+# Optional: create missing tool environments without executing the analysis.
+snakemake --cores 4 --sdm conda --conda-create-envs-only
+snakemake --cores 4 --sdm conda --printshellcmds
 ```
 
-## Benchmark & Docking Results (`results/summary_metrics.csv`)
+Use `--cores 1` instead if desired. Snakemake limits rule threads accordingly.
+The generic IDs create new data/result paths, so the first run downloads their PDBs.
+Previously downloaded files named with the old biological pair IDs are not used.
 
-| Complex | Receptor (PDB) | Ligand (PDB) | Top Swarm | Top Glowworm | Top `dfire2` Score | Simulation Wall Time (s) | Max RSS Memory (MB) |
-| :--- | :--- | :--- | :---: | :---: | :---: | :---: | :---: |
-| **`EnzymeI_HPr`** | *E. coli* Enzyme I N-terminal domain (`1EZA`) | *E. coli* HPr (`1HDN`) | `2` | `0` | `-406.546` | `12.64` | `634.22` |
-| **`Trypsin_BPTI`** | Bovine $\beta$-trypsin (`1TPO`) | Bovine pancreatic trypsin inhibitor (`4PTI`) | `6` | `16` | `-364.047` | `8.84` | `614.22` |
+## Workflow steps
 
-## Rendered Top Docking Poses
+1. `download_pdbs`: download the receptor and ligand URLs for each pair.
+2. `clean_structures`: run PDBFixer to remove waters/heterogens, model detected missing
+   residues, repair missing heavy atoms and add hydrogens at pH 7.0. Inspect repaired
+   structures when interpreting results; modeled regions are predictions.
+3. `lightdock_setup`: create swarms, processed structures, masks and ANM normal modes.
+   Water, hydrogen and OXT atoms are excluded from the LightDock inputs.
+4. `lightdock_simulate`: optimize candidate poses with dfire2 scoring and ANM flexibility.
+5. `lightdock_rank`: rank poses globally, select the exact winning swarm AND glowworm,
+   and reconstruct its ANM-deformed structure. Save selection metadata as JSON.
+6. `visualize_top_pose`: render the complete receptor in blue and ligand in orange.
+   Processed atom counts identify partners, including multichain proteins.
+7. `summarize_results`: combine rankings and simulation benchmarks from ALL configured
+   pairs into one CSV. `rule all` requests the figures and combined summary; it does
+   not itself merge file contents.
 
-| Enzyme I (N-terminal domain) – HPr (`1EZA` + `1HDN`) | $\beta$-Trypsin – BPTI (`1TPO` + `4PTI`) |
-| :---: | :---: |
-| ![EnzymeI_HPr Top Pose](results/EnzymeI_HPr/visualization/EnzymeI_HPr_top_pose.png) | ![Trypsin_BPTI Top Pose](results/Trypsin_BPTI/visualization/Trypsin_BPTI_top_pose.png) |
+## Outputs
+
+For each configured ID (for example, `pair_1`):
+
+- `results/pair_1/pair_1_top_1.pdb`: highest-ranked reconstructed complex.
+- `results/pair_1/pair_1_top_1.json`: selected swarm/glowworm metadata.
+- `results/pair_1/visualization/pair_1_top_pose.png`: rendered docking figure.
+- `results/summary_metrics.csv`: pair ID, winning IDs, dfire2 score, simulation time
+  and maximum resident memory, with one row per configured pair.
+
+The small demonstration settings test automation. A top score alone does not validate
+an interaction, and dfire2 scores should not be described as measured binding energies.
+
+## Multipair graph
+
+![Multipair workflow](dag_multipair.png)
+
+The supplied diagram shows the rule dependencies for the two example IDs, including
+both branches feeding one `summarize_results` job. It is an illustrative job graph;
+expanding multiple swarm files is represented by one simulation node per pair.
+To generate Snakemake's current DAG yourself (requires Graphviz `dot`):
+
+```bash
+snakemake --dag | dot -Tpng > dag_multipair.png
+```
+
+Its appearance can differ, and already-existing outputs affect the jobs shown.
+
+## Changes relative to the original colleague version
+
+- Keep the original rule names, folder conventions, software definitions and settings.
+- Add numbered explanatory comments to the Snakefile.
+- Correct winning glowworm selection, stage ANM files for reconstruction, and color
+  complete receptor/ligand partners while preserving bonds in the figure.
+- Use generic config pair IDs, explain inputs/parameters, and update the multipair graph.
+- Replace archived example result tables with descriptions of newly generated outputs.
+
+## Applying the update-only ZIP
+
+Copy its contents into the existing repository root, replacing matching files.
+Keep `.git`, your current `.gitignore`, the original environment definitions and the
+unchanged preparation/summary scripts. The ZIP contains only six new or changed files.
+No environments, downloaded data, results or Git metadata are included.

@@ -1,13 +1,38 @@
-# Target protein complex pairs and simulation parameters
+# Configure one or more independent protein-protein docking jobs.
+# Each entry contains TWO partners: a receptor and a ligand.
+# Add more entries (pair_3, pair_4, ...) to process more pairs in one run.
+# Pair IDs become folder/file names and the {pair} wildcard in the Snakefile.
+# Use unique IDs containing letters, digits and underscores; avoid spaces.
 pairs:
-  EnzymeI_HPr:
+  pair_1:
+    # Direct download URL for the receptor PDB file (usually the larger partner).
+    # This runnable example uses PDB 1EZA; replace the URL with your receptor.
+    # Saved automatically as data/pair_1_rec.pdb; do not enter a local path here.
     receptor_url: "https://files.rcsb.org/download/1EZA.pdb"
+    # Direct download URL for the ligand PDB file (the second protein partner).
+    # This example uses PDB 1HDN. Use a scientifically appropriate interacting pair.
+    # Saved automatically as data/pair_1_lig.pdb.
     ligand_url: "https://files.rcsb.org/download/1HDN.pdb"
-  Trypsin_BPTI:
+
+  pair_2:
+    # A second independent job; replace both URLs to select another pair.
     receptor_url: "https://files.rcsb.org/download/1TPO.pdb"
     ligand_url: "https://files.rcsb.org/download/4PTI.pdb"
 
+# Shared LightDock settings: apply to EVERY configured pair.
+# Positive integers. These small values are for a short teaching demonstration;
+# they do not establish that the best pose is biologically correct.
 docking_params:
+  # Number of search swarms distributed around the receptor.
   swarms: 10
+  # Number of candidate poses (glowworms) in each swarm.
   glowworms: 20
+  # Number of optimization iterations per candidate pose.
   steps: 20
+
+# Results: results/<pair>/... ; logs: logs/<pair>/...
+# Runtime/memory measurements: benchmarks/<pair>/...
+# All configured pairs feed into ONE table: results/summary_metrics.csv.
+# These paths are defined in the Snakefile, not configurable keys in this YAML.
+# If replacing URLs under an existing pair ID, use a NEW ID for a fresh run:
+# this prevents accidentally reusing previously downloaded files for that ID.
