@@ -1,0 +1,28 @@
+# Snakemake working cache & logs
+.snakemake/
+logs/
+
+# Raw downloaded structures (reproducible via download_pdbs)
+data/*.pdb
+
+# Intermediate LightDock simulation artifacts
+results/*/cleaned/
+results/*/init/
+results/*/swarm_*/
+results/*/*.npy
+results/*/setup.json
+results/*/rank_by_*.list
+
+# Python & OS caches
+__pycache__/
+*.py[cod]
+.ipynb_checkpoints/
+.DS_Store
+Thumbs.db
+
+# Generated results and runtime measurements
+results/
+benchmarks/
+
+# Windows download metadata
+*Zone.Identifier*

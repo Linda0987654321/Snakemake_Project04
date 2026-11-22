@@ -1,0 +1,10 @@
+name: snakemake-protein-docking
+channels:
+  - conda-forge
+  - bioconda
+  - nodefaults
+dependencies:
+  - python=3.14.10
+  - snakemake=9.27.1
+  - graphviz=14.1.2
+  - pandas>=2.2

@@ -1,0 +1,13 @@
+# Target protein complex pairs and simulation parameters
+pairs:
+  EnzymeI_HPr:
+    receptor_url: "https://files.rcsb.org/download/1EZA.pdb"
+    ligand_url: "https://files.rcsb.org/download/1HDN.pdb"
+  Trypsin_BPTI:
+    receptor_url: "https://files.rcsb.org/download/1TPO.pdb"
+    ligand_url: "https://files.rcsb.org/download/4PTI.pdb"
+
+docking_params:
+  swarms: 10
+  glowworms: 20
+  steps: 20
