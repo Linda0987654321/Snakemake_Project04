@@ -51,4 +51,14 @@ def main():
             writer.writerow([pair, swarm_id, glowworm_id, score, wall_time, max_rss])
 
 if __name__ == "__main__":
-    main()
+    import contextlib
+    import traceback
+    os.makedirs(os.path.dirname(snakemake.log[0]), exist_ok=True)
+    with open(snakemake.log[0], "w") as log_file:
+        with contextlib.redirect_stdout(log_file), contextlib.redirect_stderr(log_file):
+            try:
+                main()
+                print(f"Wrote {snakemake.output.summary}: {len(snakemake.params.pairs)} pairs")
+            except Exception:
+                traceback.print_exc()
+                raise
