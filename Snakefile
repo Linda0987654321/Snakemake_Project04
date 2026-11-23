@@ -1,4 +1,5 @@
 from pathlib import Path
+import json
 import re
 from snakemake.utils import min_version
 from snakemake.exceptions import WorkflowError
@@ -6,106 +7,98 @@ from snakemake.exceptions import WorkflowError
 min_version("9.27.1")
 configfile: "config/config.yaml"
 
-# Step 1: Discover local receptor/ligand pairs before building the job graph.
-# u1 is the receptor, u2 the ligand. The prefix is the reusable {pair} wildcard.
-INPUT_DIR = str(config["input_dir"]).rstrip("/")
+# Step 1: Discover IDs using either partner. Completeness is checked per pair in
+# Step 2, so an incomplete pair is reported without preventing other pairs running.
+ROOT = str(Path.cwd().resolve())
+INPUT_DIR = str(Path(config["input_dir"]))
+input_path = Path(INPUT_DIR).resolve()
+for generated in (Path("work").resolve(), Path("results").resolve()):
+    if input_path == generated or generated in input_path.parents:
+        raise WorkflowError("input_dir must be outside generated work/ and results/.")
 REC_IDS = set(glob_wildcards(INPUT_DIR + "/{pair}_u1.pdb").pair)
 LIG_IDS = set(glob_wildcards(INPUT_DIR + "/{pair}_u2.pdb").pair)
 PAIRS = sorted(REC_IDS | LIG_IDS)
 if not PAIRS:
     raise WorkflowError("No protein pairs found in " + INPUT_DIR +
-                        ". Add <pair>_u1.pdb and <pair>_u2.pdb.")
+                        ". Add <pair>_u1.pdb and <pair>_u2.pdb, or select data/example.")
 for pair in PAIRS:
     if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]*", pair):
-        raise WorkflowError("Invalid pair ID: " + pair +
-                            ". Use letters, digits, underscores or hyphens.")
-    for partner in (1, 2):
-        path = Path(INPUT_DIR) / f"{pair}_u{partner}.pdb"
-        if not path.is_file() or path.stat().st_size == 0:
-            raise WorkflowError("Missing or empty partner file: " + str(path))
+        raise WorkflowError("Invalid pair ID: " + pair)
 
-# Read settings once. Validate early to avoid partial runs with invalid settings.
-SWARMS = config["docking_params"]["swarms"]
-GLOWWORMS = config["docking_params"]["glowworms"]
-STEPS = config["docking_params"]["steps"]
-for name, value in [("swarms", SWARMS), ("glowworms", GLOWWORMS), ("steps", STEPS)]:
-    if type(value) is not int or value < 1:
+SETTINGS = config["docking_params"]
+for name in ("swarms", "glowworms", "steps"):
+    if type(SETTINGS[name]) is not int or SETTINGS[name] < 1:
         raise WorkflowError(name + " must be a positive integer.")
+SETTINGS_JSON = json.dumps({name: SETTINGS[name] for name in
+                            ("swarms", "glowworms", "steps")})
+
+def existing_partners(wildcards):
+    # Track every existing source, but let Step 2 report a missing partner.
+    return [str(p) for n in (1, 2)
+            if (p := Path(INPUT_DIR) / f"{wildcards.pair}_u{n}.pdb").is_file()]
 
 wildcard_constraints:
     pair = r"[A-Za-z0-9][A-Za-z0-9_-]*"
 
-# Default target: request a structure, metadata and figure for every detected pair.
-# expand() fills in the pair IDs. The summary is produced by a separate rule.
+# Every pair's final folder always has status.json. Successful pairs also have
+# real structures/figures. A failed pair never receives dummy scientific outputs.
+# Directory outputs allow optional artifacts without hiding a failure in the CSV.
 rule all:
     input:
-        expand("results/{pair}/{pair}_top_1.pdb", pair=PAIRS),
-        expand("results/{pair}/{pair}_top_1.json", pair=PAIRS),
-        expand("results/{pair}/{pair}_top_pose.png", pair=PAIRS),
+        expand("results/{pair}", pair=PAIRS),
         "results/summary_metrics.csv"
 
-# Step 2: Read the local input PDBs and write repaired structures under work/.
-# script: makes named input/output/log paths available to the Python script.
+# Step 2: Validate both files, repair structures with PDBFixer and record status.
+# The stage runner catches pair-level errors; its log keeps the full traceback.
 rule clean_structures:
     input:
-        rec = INPUT_DIR + "/{pair}_u1.pdb",
-        lig = INPUT_DIR + "/{pair}_u2.pdb"
+        sources = existing_partners,
+        helper = "scripts/fix_and_clean_pdb.py"
     output:
-        rec = "work/{pair}/cleaned/{pair}_rec_clean.pdb",
-        lig = "work/{pair}/cleaned/{pair}_lig_clean.pdb"
+        stage_dir = directory("work/{pair}/cleaned")
+    params:
+        stage = "clean_structures",
+        root = ROOT,
+        receptor = lambda wc: str(Path(INPUT_DIR) / f"{wc.pair}_u1.pdb"),
+        ligand = lambda wc: str(Path(INPUT_DIR) / f"{wc.pair}_u2.pdb")
     log:
         "logs/{pair}/clean_structures.log"
     conda:
         "envs/workflow_tools.yaml"
     script:
-        "scripts/fix_and_clean_pdb.py"
+        "scripts/run_stage.py"
 
-# Step 3: Create starting poses, processed PDBs, masks and ANM normal modes.
-# Water/hydrogen/OXT are excluded for scoring after PDBFixer preparation.
-# The complete tool environment is reused by preparation, docking and plotting.
+# Step 3: lgd_setup.py (from LightDock) creates starting poses and ANM modes.
+# The runner skips this pair if preparation failed, recording the original error.
 rule lightdock_setup:
     input:
-        rec = "work/{pair}/cleaned/{pair}_rec_clean.pdb",
-        lig = "work/{pair}/cleaned/{pair}_lig_clean.pdb"
+        previous = "work/{pair}/cleaned",
+        runner = "scripts/run_stage.py"
     output:
-        setup = "work/{pair}/setup.json",
-        init_dir = directory("work/{pair}/init"),
-        rec = "work/{pair}/cleaned/lightdock_{pair}_rec_clean.pdb",
-        lig = "work/{pair}/cleaned/lightdock_{pair}_lig_clean.pdb"
+        stage_dir = directory("work/{pair}/setup")
     params:
-        swarms = SWARMS,
-        glowworms = GLOWWORMS
+        root = ROOT,
+        settings = SETTINGS_JSON
     log:
         "logs/{pair}/lightdock_setup.log"
     conda:
         "envs/workflow_tools.yaml"
     shell:
-        """
-        mkdir -p work/{wildcards.pair} logs/{wildcards.pair}
-        REC=$(realpath {input.rec:q})
-        LIG=$(realpath {input.lig:q})
-        LOG=$(realpath {log:q})
-        RUN=$(realpath work/{wildcards.pair})
-        # Clear only this pair's derived setup/simulation files on a setup rerun.
-        rm -f "$RUN"/cleaned/lightdock_* "$RUN"/cleaned/*.points
-        rm -rf "$RUN"/swarm_* "$RUN"/init
-        rm -f "$RUN"/setup.json "$RUN"/*.npy
-        cd "$RUN"
-        lgd_setup.py "$REC" "$LIG" -s {params.swarms} -g {params.glowworms} \
-            --noxt --noh --now -anm > "$LOG" 2>&1
-        """
+        "python {input.runner:q} lightdock_setup --pair {wildcards.pair:q} "
+        "--root {params.root:q} --previous {input.previous:q} "
+        "--output {output.stage_dir:q} --log {log:q} --settings {params.settings:q}"
 
-# Step 4: Run the actual optimization and declare every final swarm file.
-# Double braces preserve {pair} while expand() inserts swarm IDs and steps.
+# Step 4: lgd_run.py performs the actual dfire2 docking optimization.
+# Its final swarm files are verified inside the stage directory before success.
 rule lightdock_simulate:
     input:
-        setup = "work/{pair}/setup.json",
-        init_dir = "work/{pair}/init"
+        previous = "work/{pair}/setup",
+        runner = "scripts/run_stage.py"
     output:
-        gso_files = expand("work/{{pair}}/swarm_{swarm}/gso_{steps}.out",
-                           swarm=range(SWARMS), steps=[STEPS])
+        stage_dir = directory("work/{pair}/simulation")
     params:
-        steps = STEPS
+        root = ROOT,
+        settings = SETTINGS_JSON
     threads: 4
     log:
         "logs/{pair}/lightdock_simulate.log"
@@ -114,29 +107,23 @@ rule lightdock_simulate:
     conda:
         "envs/workflow_tools.yaml"
     shell:
-        """
-        LOG=$(realpath {log:q})
-        cd work/{wildcards.pair}
-        lgd_run.py setup.json {params.steps} -c {threads} -s dfire2 > "$LOG" 2>&1
-        """
+        "python {input.runner:q} lightdock_simulate --pair {wildcards.pair:q} "
+        "--root {params.root:q} --previous {input.previous:q} "
+        "--output {output.stage_dir:q} --log {log:q} --settings {params.settings:q} "
+        "--threads {threads}"
 
-# Step 5: Rank all candidate poses and reconstruct the exact winning model.
-# The helper retains the winning glowworm and stages ANM modes/masks correctly.
+# Step 5: lgd_rank.py ranks candidates. Our exporter reconstructs the exact
+# winning glowworm, retaining its ANM deformation and selection metadata.
 rule lightdock_rank:
     input:
-        gso_files = expand("work/{{pair}}/swarm_{swarm}/gso_{steps}.out",
-                           swarm=range(SWARMS), steps=[STEPS]),
-        rec = "work/{pair}/cleaned/{pair}_rec_clean.pdb",
-        lig = "work/{pair}/cleaned/{pair}_lig_clean.pdb",
-        setup = "work/{pair}/setup.json",
+        previous = "work/{pair}/simulation",
+        runner = "scripts/run_stage.py",
         exporter = "scripts/export_top_pose.py"
     output:
-        rankings = "work/{pair}/{pair}_rankings.gso",
-        top_pdb = "results/{pair}/{pair}_top_1.pdb",
-        provenance = "results/{pair}/{pair}_top_1.json"
+        stage_dir = directory("work/{pair}/ranked")
     params:
-        swarms = SWARMS,
-        steps = STEPS
+        root = ROOT,
+        settings = SETTINGS_JSON
     log:
         "logs/{pair}/lightdock_rank.log"
     benchmark:
@@ -144,46 +131,34 @@ rule lightdock_rank:
     conda:
         "envs/workflow_tools.yaml"
     shell:
-        """
-        mkdir -p results/{wildcards.pair}
-        REC=$(realpath {input.rec:q})
-        LIG=$(realpath {input.lig:q})
-        LOG=$(realpath {log:q})
-        EXPORTER=$(realpath {input.exporter:q})
-        RANKINGS=$(realpath -m {output.rankings:q})
-        TOP=$(realpath -m {output.top_pdb:q})
-        cd work/{wildcards.pair}
-        lgd_rank.py {params.swarms} {params.steps} > "$LOG" 2>&1
-        cp rank_by_scoring.list "$RANKINGS"
-        python "$EXPORTER" rank_by_scoring.list "$REC" "$LIG" \
-            setup.json "$TOP" {params.steps} >> "$LOG" 2>&1
-        """
+        "python {input.runner:q} lightdock_rank --pair {wildcards.pair:q} "
+        "--root {params.root:q} --previous {input.previous:q} "
+        "--output {output.stage_dir:q} --log {log:q} --settings {params.settings:q}"
 
-# Step 6: Render the exported structure. Known processed atom counts identify
-# both complete partners, including multiple chains, and preserve cartoon bonds.
+# Step 6: Copy the docked model to results and render it using PyMOL.
+# If rendering fails, retain the valid model and report the missing figure.
 rule visualize_top_pose:
     input:
-        top_pdb = "results/{pair}/{pair}_top_1.pdb",
-        rec = "work/{pair}/cleaned/lightdock_{pair}_rec_clean.pdb",
-        lig = "work/{pair}/cleaned/lightdock_{pair}_lig_clean.pdb",
+        previous = "work/{pair}/ranked",
+        simulation = "work/{pair}/simulation",
         renderer = "scripts/plot_top_pose.py"
     output:
-        image = "results/{pair}/{pair}_top_pose.png"
+        stage_dir = directory("results/{pair}")
+    params:
+        stage = "visualize_top_pose",
+        root = ROOT
     log:
         "logs/{pair}/visualize.log"
     conda:
         "envs/workflow_tools.yaml"
-    shell:
-        """
-        python {input.renderer:q} {input.top_pdb:q} {output.image:q} \
-            {input.rec:q} {input.lig:q} > {log:q} 2>&1
-        """
+    script:
+        "scripts/run_stage.py"
 
-# Step 7: Combine one ranking and simulation benchmark from each detected pair.
-# One shared output table contains one row per pair, not one table per pair.
+# Step 7: Wait for all pair reports and write one CSV, including failed pairs.
+# Metrics are blank when their stage did not complete successfully.
 rule summarize_results:
     input:
-        rankings = expand("work/{pair}/{pair}_rankings.gso", pair=PAIRS),
+        reports = expand("results/{pair}", pair=PAIRS),
         benchmarks = expand("benchmarks/{pair}/simulate.txt", pair=PAIRS)
     output:
         summary = "results/summary_metrics.csv"

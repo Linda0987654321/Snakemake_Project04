@@ -10,5 +10,5 @@ __pycache__/
 .DS_Store
 Thumbs.db
 
-# Track original inputs in data/raw; exclude loose downloaded PDBs.
+# Track originals in data/input and data/example; exclude loose downloaded PDBs.
 data/*.pdb
