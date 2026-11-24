@@ -72,31 +72,29 @@ rule clean_structures:
 # The runner skips this pair if preparation failed, recording the original error.
 rule lightdock_setup:
     input:
-        previous = "work/{pair}/cleaned",
-        runner = "scripts/run_stage.py"
+        previous = "work/{pair}/cleaned"
     output:
         stage_dir = directory("work/{pair}/setup")
     params:
+        stage = "lightdock_setup",
         root = ROOT,
         settings = SETTINGS_JSON
     log:
         "logs/{pair}/lightdock_setup.log"
     conda:
         "envs/workflow_tools.yaml"
-    shell:
-        "python {input.runner:q} lightdock_setup --pair {wildcards.pair:q} "
-        "--root {params.root:q} --previous {input.previous:q} "
-        "--output {output.stage_dir:q} --log {log:q} --settings {params.settings:q}"
+    script:
+        "scripts/run_stage.py"
 
 # Step 4: lgd_run.py performs the actual dfire2 docking optimization.
 # Its final swarm files are verified inside the stage directory before success.
 rule lightdock_simulate:
     input:
-        previous = "work/{pair}/setup",
-        runner = "scripts/run_stage.py"
+        previous = "work/{pair}/setup"
     output:
         stage_dir = directory("work/{pair}/simulation")
     params:
+        stage = "lightdock_simulate",
         root = ROOT,
         settings = SETTINGS_JSON
     threads: 4
@@ -106,22 +104,19 @@ rule lightdock_simulate:
         "benchmarks/{pair}/simulate.txt"
     conda:
         "envs/workflow_tools.yaml"
-    shell:
-        "python {input.runner:q} lightdock_simulate --pair {wildcards.pair:q} "
-        "--root {params.root:q} --previous {input.previous:q} "
-        "--output {output.stage_dir:q} --log {log:q} --settings {params.settings:q} "
-        "--threads {threads}"
+    script:
+        "scripts/run_stage.py"
 
 # Step 5: lgd_rank.py ranks candidates. Our exporter reconstructs the exact
 # winning glowworm, retaining its ANM deformation and selection metadata.
 rule lightdock_rank:
     input:
         previous = "work/{pair}/simulation",
-        runner = "scripts/run_stage.py",
         exporter = "scripts/export_top_pose.py"
     output:
         stage_dir = directory("work/{pair}/ranked")
     params:
+        stage = "lightdock_rank",
         root = ROOT,
         settings = SETTINGS_JSON
     log:
@@ -130,10 +125,8 @@ rule lightdock_rank:
         "benchmarks/{pair}/rank.txt"
     conda:
         "envs/workflow_tools.yaml"
-    shell:
-        "python {input.runner:q} lightdock_rank --pair {wildcards.pair:q} "
-        "--root {params.root:q} --previous {input.previous:q} "
-        "--output {output.stage_dir:q} --log {log:q} --settings {params.settings:q}"
+    script:
+        "scripts/run_stage.py"
 
 # Step 6: Copy the docked model to results and render it using PyMOL.
 # If rendering fails, retain the valid model and report the missing figure.

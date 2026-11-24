@@ -182,6 +182,8 @@ if __name__ == "__main__":
         run_stage(sm.params.stage, sm.wildcards.pair, sm.params.root,
                   sm.output.stage_dir, sm.log[0],
                   previous=getattr(sm.input, "previous", None),
+                  settings=json.loads(getattr(sm.params, "settings", "{}")),
+                  threads=sm.threads,
                   receptor=getattr(sm.params, "receptor", None),
                   ligand=getattr(sm.params, "ligand", None))
     else:
