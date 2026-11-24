@@ -1,15 +1,13 @@
-# Folder containing PDB partners directly inside it (no nested subfolders).
-# Relative paths are resolved from the project root. Keep inputs outside work/.
-input_dir: "data/raw"
+# Folder scanned directly for matching <pair>_u1.pdb and <pair>_u2.pdb files.
+# u1 = receptor, u2 = ligand. Pair IDs: letters, digits, underscores, hyphens.
+# Relative paths resolve from the project root; absolute paths also work.
+# Use data/example to run the supplied examples, or another folder of your choice.
+input_dir: "data/input"
 
-# Automatically detected: <pair>_u1.pdb (receptor) + <pair>_u2.pdb (ligand).
-# Add/remove complete pairs in input_dir to choose the jobs; no pair list needed.
-# Pair IDs may use letters, digits, underscores and hyphens, without spaces.
-# A missing partner or an empty folder stops the workflow with an explanation.
-
-# Positive integers shared by all detected pairs.
-# Small teaching-demo settings; larger sampling may be needed scientifically.
+# Shared sampling settings for every pair. Positive integers are required.
+# Low values below are intended for a short demonstration.
+# Details: https://lightdock.org/tutorials/basics
 docking_params:
-  swarms: 10       # Search groups distributed around the receptor.
-  glowworms: 20    # Candidate poses in each swarm.
+  swarms: 10       # Starting search groups around the receptor.
+  glowworms: 20    # Candidate poses within each swarm.
   steps: 20        # Optimization iterations.

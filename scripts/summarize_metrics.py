@@ -1,64 +1,56 @@
+"""Combine every pair report, including failed and skipped pairs, in one CSV."""
+import contextlib
 import csv
-import os
-import sys
+import json
+from pathlib import Path
 
-def parse_ranking(gso_path):
-    with open(gso_path, "r") as f:
-        lines = [line.strip() for line in f if line.strip()]
-    # Line 0 is header, Line 1 is rank #1
-    if len(lines) < 2:
-        return "NA", "NA", "NA"
-    parts = lines[1].split()
-    swarm_id = parts[0]
-    glowworm_id = parts[1]
-    scoring = parts[-1]
-    return swarm_id, glowworm_id, scoring
+FIELDS = ["pair", "status", "failed_stage", "error", "log_path",
+          "top_swarm_id", "top_glowworm_id", "top_dfire2_score",
+          "simulate_wall_time_s", "simulate_max_rss_mb",
+          "docked_structure", "figure"]
 
-def parse_benchmark(bench_path):
-    with open(bench_path, "r") as f:
-        lines = [line.strip() for line in f if line.strip()]
-    if len(lines) < 2:
-        return "NA", "NA"
-    headers = lines[0].split("\t")
-    values = lines[1].split("\t")
-    row = dict(zip(headers, values))
-    wall_time_s = round(float(row.get("s", 0.0)), 2)
-    max_rss_mb = round(float(row.get("max_rss", 0.0)), 2)
-    return wall_time_s, max_rss_mb
 
-def main():
-    output_csv = snakemake.output.summary
-    pairs = snakemake.params.pairs
-    rankings_files = snakemake.input.rankings
-    benchmark_files = snakemake.input.benchmarks
+def summarize(pairs, reports, benchmarks, output):
+    output = Path(output)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    failures = 0
+    with output.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(handle, fieldnames=FIELDS)
+        writer.writeheader()
+        for pair, folder, benchmark in zip(pairs, reports, benchmarks, strict=True):
+            folder = Path(folder)
+            report = json.loads((folder / "status.json").read_text())
+            if report["pair"] != pair:
+                raise ValueError(f"Mismatched pair report: {folder}")
+            failed = report["status"] != "success"
+            failures += int(failed)
+            row = {"pair": pair, "status": "failed" if failed else "success",
+                   "failed_stage": report["failed_stage"], "error": report["error"],
+                   "log_path": report["log_path"], **report["metrics"]}
+            if "lightdock_simulate" in report["completed_stages"]:
+                with Path(benchmark).open() as source:
+                    stats = next(csv.DictReader(source, delimiter="\t"))
+                row.update(simulate_wall_time_s=round(float(stats["s"]), 2),
+                           simulate_max_rss_mb=round(float(stats["max_rss"]), 2))
+            for kind in ("docked_structure", "figure"):
+                if kind in report["artifacts"]:
+                    artifact = folder / report["artifacts"][kind]
+                    if not artifact.is_file():
+                        raise ValueError(f"Reported artifact is absent: {artifact}")
+                    row[kind] = str(artifact)
+            writer.writerow(row)
+    message = f"Batch report: {len(pairs) - failures} successful, {failures} failed pairs."
+    print(message)
+    if failures:
+        print("WARNING: Snakemake finished the batch, but some pairs failed. "
+              "Check status, failed_stage and log_path in the CSV.")
+    return message
 
-    os.makedirs(os.path.dirname(output_csv), exist_ok=True)
-
-    with open(output_csv, "w", newline="") as csvfile:
-        writer = csv.writer(csvfile)
-        writer.writerow([
-            "pair",
-            "top_swarm_id",
-            "top_glowworm_id",
-            "top_dfire2_score",
-            "simulate_wall_time_s",
-            "simulate_max_rss_mb"
-        ])
-
-        for pair, rank_file, bench_file in zip(pairs, rankings_files, benchmark_files):
-            swarm_id, glowworm_id, score = parse_ranking(rank_file)
-            wall_time, max_rss = parse_benchmark(bench_file)
-            writer.writerow([pair, swarm_id, glowworm_id, score, wall_time, max_rss])
 
 if __name__ == "__main__":
-    import contextlib
-    import traceback
-    os.makedirs(os.path.dirname(snakemake.log[0]), exist_ok=True)
-    with open(snakemake.log[0], "w") as log_file:
-        with contextlib.redirect_stdout(log_file), contextlib.redirect_stderr(log_file):
-            try:
-                main()
-                print(f"Wrote {snakemake.output.summary}: {len(snakemake.params.pairs)} pairs")
-            except Exception:
-                traceback.print_exc()
-                raise
+    Path(snakemake.log[0]).parent.mkdir(parents=True, exist_ok=True)
+    with open(snakemake.log[0], "w", encoding="utf-8") as log:
+        with contextlib.redirect_stdout(log), contextlib.redirect_stderr(log):
+            message = summarize(snakemake.params.pairs, snakemake.input.reports,
+                                snakemake.input.benchmarks, snakemake.output.summary)
+    print(message + " See " + str(snakemake.output.summary), flush=True)
